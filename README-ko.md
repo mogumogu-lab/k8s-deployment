@@ -1,50 +1,55 @@
 ---
-title: "kubectl로 Pod 생성부터 검증까지"
-description: "kubectl apply로 배포하고, exec·logs·describe로 상태를 점검하는 전체 워크플로우"
-date: 2025-08-31
+title: "kubectl로 Deployment 롤링 업데이트부터 검증까지"
+description: "kubectl apply로 배포하고, 롤링 업데이트 중 트래픽 분배를 실시간으로 관찰하는 전체 워크플로우"
+date: 2025-09-02
 ---
 
-# Kubernetes Pod
+# Kubernetes Deployment
 
 ## Contents 
 
 ### 요약 (TL;DR)
 
-이 가이드는 **Kubernetes 초보자**를 위한 Pod 배포 실습서입니다!
+이 가이드는 **Kubernetes 롤링 업데이트**를 실제로 체험해보는 실습서입니다!
 
-- **무엇을**: kubectl 명령어로 웹 애플리케이션을 Kubernetes에 배포하고 실행 상태를 확인해보기
-- **왜**: Docker 컨테이너를 실제 서버환경(Kubernetes)에서 돌려보고 문제 해결 방법을 배우기 위해
-- **결과**: 내 컴퓨터에서 `curl localhost:8080`을 치면 `{"ok":true}` 응답이 나오는 웹서버 완성
+- **무엇을**: kubectl 명령어로 서로 다른 두 서비스(user-service, payment-service)를 이용해 롤링 업데이트를 실행하고 트래픽 분배 과정을 관찰하기
+- **왜**: Deployment의 롤링 업데이트 메커니즘과 무중단 배포 과정을 눈으로 직접 확인하기 위해
+- **결과**: v1(user-service) → v2(payment-service)로 롤링 업데이트되면서 두 서비스가 동시에 트래픽을 받는 구간을 `--no-keepalive` 옵션으로 관찰 완료
 
-> 💡 **이런 분들께 추천**: Docker는 써봤는데 Kubernetes는 처음이신 분, kubectl 명령어가 낯선 분
+> 💡 **이런 분들께 추천**: Pod는 써봤는데 Deployment 롤링 업데이트가 궁금한 분, 트래픽 분배 과정을 실제로 보고 싶은 분
 
-- **5분 만에 끝내기**:
+- **2분 만에 확인하기**:
 
 ```bash
-$ kubectl apply -k k8s/overlays/dev
-namespace/app-dev created
-configmap/user-service-config created
-service/user-service created
-pod/user-service created
+$ ./test-rolling-update.sh
+=== Rolling Update Test Script ===
+Minikube IP: 192.168.49.2
+Service URL: http://192.168.49.2:30000/
 
-$ kubectl -n app-dev get all
-NAME               READY   STATUS    RESTARTS   AGE
-pod/user-service   1/1     Running   0          26s
+🧹 Cleaning up existing resources...
+🚀 Deploying v1 (user-service)...
+✅ Deployment user-service is ready
+🧪 Testing v1 service (5 requests)...
 
-NAME                   TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
-service/user-service   ClusterIP   10.97.221.189   <none>        80/TCP    26s
+⚡ Starting Rolling Update to v2 (payment-service)...
+👀 Monitoring Rolling Update (will auto-stop when complete)...
 
-$ kubectl -n app-dev port-forward pod/user-service 8080:3000 &
-Forwarding from [::1]:8080 -> 3000
+--- Pod Status (23:28:53) ---
+user-service-5ffc8dbcf6-7jtrm 1/1 Running
+user-service-5ffc8dbcf6-zd44d 1/1 Running
+user-service-7dbcddc6fc-fmwgq 1/1 Terminating
+user-service-7dbcddc6fc-kbk57 1/1 Terminating
 
-$ curl http://localhost:8080
-{"ok":true}
+--- Service Responses ---
+Request 19: payment-service v1.0.0
+Request 22: payment-service v1.0.0
+Request 23: payment-service v1.0.0
 
-$ kubectl delete ns app-dev
-namespace "app-dev" deleted
+🎉 Rolling update completed! All pods are from the same replica set.
+✅ Rolling update test completed successfully!
 ```
 
-### 1. 우리가 만들 것 (What you’ll build)
+### 1. 우리가 만들 것 (What you'll build)
 
 - **목표 아키텍처**:
 
@@ -54,62 +59,77 @@ flowchart TB
     classDef strong stroke:#111,stroke-width:2px,color:#111;
 
     subgraph Local["로컬 환경"]
-        kubectl["kubectl<br/>(로컬)"]
-        portforward["port-forward<br/>:8080 → :3000"]
+        script["test-rolling-update.sh<br/>(자동화 스크립트)"]
+        curl["curl --no-keepalive<br/>트래픽 분배 테스트"]
     end
     
     subgraph K8s["app-dev 네임스페이스"]
-        pod["user-service<br/>Pod<br/>:3000"]
-        service["user-service<br/>Service<br/>80→3000"]
+        subgraph V1["v1 ReplicaSet (Terminating)"]
+            pod1["user-service<br/>Pod<br/>:3000"]
+        end
+        subgraph V2["v2 ReplicaSet (Creating)"]
+            pod2["payment-service<br/>Pod<br/>:3000"]
+        end
+        service["user-service<br/>NodePort Service<br/>30000→3000"]
         configmap["ConfigMap<br/>user-service-config<br/>PORT=3000"]
     end
      
-    kubectl -->|kubectl apply -k| K8s
-    configmap -->|환경변수 주입| pod
-    service -->|트래픽 라우팅| pod
+    script -->|kubectl apply -f| K8s
+    script -->|실시간 모니터링| curl
+    curl -->|부하 분산| service
+    configmap -->|환경변수 주입| pod1
+    configmap -->|환경변수 주입| pod2
+    service -->|트래픽 라우팅| pod1
+    service -->|트래픽 라우팅| pod2
 
     %% Softer cluster backgrounds (outer boxes)
     style Local fill:#F9FCFF,stroke:#333,color:#111
     style K8s  fill:#FAF5FF,stroke:#333,color:#111
+    style V1 fill:#ffebee,stroke:#d32f2f,color:#111
+    style V2 fill:#e8f5e8,stroke:#2e7d32,color:#111
 
     %% Inner node fills as you like, but borders are strong black
-    style pod      fill:#c8e6c9
+    style pod1      fill:#ffcdd2
+    style pod2      fill:#c8e6c9
     style service  fill:#fff3e0
     style configmap fill:#fce4ec
-    style kubectl fill:#FFFFFF,stroke:#111,stroke-width:2px,color:#111
-    style portforward fill:#FFFFFF,stroke:#111,stroke-width:2px,color:#111
+    style script fill:#e3f2fd
+    style curl fill:#f3e5f5
 
     %% Apply strong border class to key nodes
-    class kubectl,portforward,pod,service,configmap strong
+    class script,curl,pod1,pod2,service,configmap strong
 
     %% Darken all edges
     linkStyle default stroke:#111,stroke-width:2px;
 ```
 
 - **만들게 될 것들**
-  - **Namespace** `app-dev`: 프로젝트만의 독립적인 공간 (다른 앱들과 섞이지 않게 격리)
-  - **Pod** `user-service`: 실제 웹서버가 돌아가는 컨테이너 (Docker 컨테이너와 비슷)
-  - **Service** `user-service`: Pod에 접속할 수 있게 해주는 "문" 역할
-  - **ConfigMap** `user-service-config`: 웹서버 설정 정보를 저장하는 곳 (포트번호 등)
+  - **Deployment** `user-service`: 롤링 업데이트를 관리하는 컨트롤러
+  - **v1 ReplicaSet**: user-service:1.0.0 이미지를 실행하는 Pod들
+  - **v2 ReplicaSet**: payment-service:1.0.0 이미지를 실행하는 Pod들  
+  - **NodePort Service**: 외부에서 접근 가능한 서비스 (포트 30000)
+  - **자동화 스크립트**: 전체 과정을 자동으로 실행하고 모니터링
 
 - **성공 판정 기준**
-  - `kubectl get pods`에서 Ready=1/1, Status=Running
-  - `kubectl logs`에서 "🚀 User service is running" 메시지 확인
-  - Service Discovery 테스트: `curl http://user-service/`에서 200 OK
-  - 외부 접근 테스트: `curl localhost:8080`에서 `{"ok":true}` 응답
-  - 모든 리소스 정상 삭제 완료
+  - v1 배포 완료 후 모든 요청이 `user-service v1.0.0`으로 응답
+  - 롤링 업데이트 중 Pod 상태가 Terminating/ContainerCreating/Running으로 변화
+  - 업데이트 완료 후 모든 요청이 `payment-service v1.0.0`으로 응답
+  - 단일 ReplicaSet만 활성화되어 롤링 업데이트 완료 확인
+  - 모든 리소스 자동 정리 완료
 
 ### 2. 준비물 (Prereqs)
 
 - OS: Linux / macOS / Windows 11 + WSL2(Ubuntu 22.04+)
-- kubectl: v1.27+ (-k 지원, Kustomize 내장)
+- kubectl: v1.27+ (Deployment 및 rollout 지원)
 - 컨테이너 런타임: Docker(권장) 또는 containerd(+nerdctl)
 - 로컬 클러스터(택1)
   - Minikube v1.33+ (Docker driver 권장)
   - 또는 kind / k3d, 또는 이미 접근 가능한 K8s 클러스터
-- 레지스트리 접근: Docker Hub pull 가능(프라이빗이면 docker login)
-- 네트워크/포트: 아웃바운드 HTTPS 가능, 로컬 8080 포트 비어있음
-- 검증 도구: curl (응답 확인용)
+- 레지스트리 접근: Docker Hub에서 사전 빌드된 이미지 pull 가능
+  - `mogumogusityau/user-service:1.0.0`
+  - `mogumogusityau/payment-service:1.0.0`
+- 네트워크/포트: 아웃바운드 HTTPS 가능, NodePort 30000 사용 가능
+- 검증 도구: curl (응답 확인용), jq (JSON 파싱용)
 
 ```bash
 # 클러스터 연결 확인
@@ -120,196 +140,283 @@ CoreDNS is running at https://192.168.49.2:8443/api/v1/namespaces/kube-system/se
 $ kubectl get nodes
 NAME       STATUS   ROLES           AGE   VERSION
 minikube   Ready    control-plane   19h   v1.33.1
+
+# 필요한 이미지가 pull 가능한지 확인
+$ docker pull mogumogusityau/user-service:1.0.0
+$ docker pull mogumogusityau/payment-service:1.0.0
 ```
 
 ### 3. 핵심 개념 요약 (Concepts)
 
 - **꼭 알아야 할 포인트**:
-  - **Kustomize**: `base/` + `overlays/` 패턴으로 환경별 구성 관리
-  - **Service Discovery**: Pod간 통신을 위한 DNS 기반 서비스 이름 해석
-  - **ConfigMap Injection**: 환경변수를 컨테이너에 주입하는 방식
-  - **Port-forward**: 로컬에서 Pod로 직접 터널링하는 디버깅 도구
-  - **Resource Lifecycle**: apply → running → delete 전체 흐름
+  - **Rolling Update**: 기존 Pod를 점진적으로 새 버전으로 교체하는 무중단 배포 방식
+  - **ReplicaSet**: 동일한 Pod의 복제본을 관리하는 컨트롤러 (Deployment가 자동 생성)
+  - **Traffic Distribution**: 업데이트 중 구버전과 신버전이 동시에 트래픽을 받는 구간
+  - **NodePort**: 클러스터 외부에서 접근 가능한 서비스 타입
+  - **Rollout Strategy**: maxUnavailable=1, maxSurge=1로 안전한 롤링 업데이트 설정
 
 | 구분 | 설명 | 주의사항 |
 |------|------|----------|
-| `kubectl apply -k` | Kustomization 디렉토리 전체 적용 | `-f`와 달리 여러 리소스 한번에 처리 |
-| `kubectl exec -it` | 컨테이너 내부 셸 접근 | 컨테이너에 셸(sh/bash)이 있어야 함 |
-| `kubectl port-forward` | 로컬→Pod 터널링 | 백그라운드 프로세스로 남을 수 있음 |
+| `kubectl rollout status` | 롤아웃 진행상황 실시간 모니터링 | 완료될 때까지 대기하는 블로킹 명령어 |
+| `kubectl rollout history` | 이전 배포 이력 확인 | revision 번호로 롤백 지점 선택 가능 |
+| `kubectl rollout undo` | 이전 버전으로 롤백 | --to-revision으로 특정 버전 지정 가능 |
+| `--no-keepalive` | HTTP 연결을 매번 새로 생성 | 로드밸런싱 분배 패턴을 정확히 관찰 가능 |
 
 ### 4. 구현 (Step-by-step)
 
 #### 4.1 매니페스트 구조 확인
 
 ```yaml
-# k8s/base/deployment.yaml
-# 목적: 환경변수 주입과 적절한 라벨을 가진 단일 Pod
-apiVersion: v1
-kind: Pod
+# k8s/base/deployment-v1.yaml
+# 목적: user-service:1.0.0을 사용한 초기 배포
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: user-service
   labels:
     app.kubernetes.io/name: user-service
+    app.kubernetes.io/version: "1.0.0"
 spec:
-  containers:
-    - name: app
-      image: mogumogusityau/user-service:1.1.0
-      imagePullPolicy: IfNotPresent
-      ports:
-        - containerPort: 3000
-      env:
-        - name: PORT
-          valueFrom:
-            configMapKeyRef:
-              name: user-service-config
-              key: PORT
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: user-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: user-service
+        app.kubernetes.io/version: "1.0.0"
+    spec:
+      containers:
+        - name: app
+          image: mogumogusityau/user-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: user-service-config
+                  key: PORT
+            - name: VERSION
+              value: "1.0.0"
 ```
 
 ```yaml
-# k8s/base/service.yaml  
-# 목적: 표준 HTTP 포트를 통한 클러스터 내부 통신
+# k8s/base/deployment-v2.yaml  
+# 목적: payment-service:1.0.0으로 롤링 업데이트
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service  # 동일한 이름으로 업데이트
+  labels:
+    app.kubernetes.io/name: user-service
+    app.kubernetes.io/version: "2.0.0"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: user-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: user-service
+        app.kubernetes.io/version: "2.0.0"
+    spec:
+      containers:
+        - name: app
+          image: mogumogusityau/payment-service:1.0.0  # 다른 서비스로 변경
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: user-service-config
+                  key: PORT
+            - name: VERSION
+              value: "2.0.0"
+            - name: MESSAGE
+              value: "Hello from Payment Service!"
+```
+
+```yaml
+# k8s/base/service-nodeport.yaml
+# 목적: 외부 접근을 위한 NodePort 서비스
 apiVersion: v1
 kind: Service
 metadata:
   name: user-service
+  namespace: app-dev
+  labels:
+    app.kubernetes.io/name: user-service
 spec:
+  type: NodePort
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30000
+      protocol: TCP
+      name: http
   selector:
     app.kubernetes.io/name: user-service
-  ports:
-    - name: http
-      port: 80
-      targetPort: 3000
-  type: ClusterIP
 ```
 
-```yaml
-# k8s/base/configmap.yaml
-# 목적: 중앙 집중식 설정 관리
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: user-service-config
-data:
-  PORT: "3000"
-```
-
-#### 4.2 배포 및 초기 상태 확인
+#### 4.2 자동화 스크립트 실행
 
 ```bash
-# Kustomize를 사용해서 모든 리소스 적용
-$ kubectl apply -k k8s/overlays/dev
+# 실행 권한 부여
+$ chmod +x test-rolling-update.sh
 
-namespace/app-dev created
-configmap/user-service-config created
-service/user-service created
-pod/user-service created
-
-# 모든 리소스가 생성되었는지 확인
-$ kubectl -n app-dev get all -o wide
-NAME               READY   STATUS    RESTARTS   AGE   IP            NODE       NOMINATED NODE   READINESS GATES
-pod/user-service   1/1     Running   0          24s   10.244.0.13   minikube   <none>           <none>
-
-NAME                   TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE   SELECTOR
-service/user-service   ClusterIP   10.108.3.31   <none>        80/TCP    24s   app.kubernetes.io/name=user-service
-
-$ kubectl -n app-dev get configmap,pod,service
-NAME                            DATA   AGE
-configmap/kube-root-ca.crt      1      37s
-configmap/user-service-config   1      37s
-
-NAME               READY   STATUS    RESTARTS   AGE
-pod/user-service   1/1     Running   0          37s
-
-NAME                   TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE
-service/user-service   ClusterIP   10.108.3.31   <none>        80/TCP    37s
+# 전체 롤링 업데이트 과정 자동 실행
+$ ./test-rolling-update.sh
 ```
+
+**스크립트 주요 기능**:
+1. **🧹 환경 초기화**: 기존 리소스 모두 삭제
+2. **🚀 v1 배포**: user-service:1.0.0 배포 및 준비 대기
+3. **🧪 v1 검증**: 5번 요청으로 정상 작동 확인
+4. **⚡ 롤링 업데이트 시작**: deployment-v2.yaml 적용
+5. **👀 실시간 모니터링**: Pod 상태와 트래픽 분배 관찰
+6. **🎉 완료 감지**: 모든 Pod가 동일 ReplicaSet이 되면 자동 종료
+7. **🔍 최종 검증**: v2 서비스 5번 테스트
+8. **🧹 자동 정리**: 모든 리소스 삭제
 
 #### 4.3 상세 검증 (Verification)
 
+**롤링 업데이트 과정 관찰**:
+
 ```bash
-# 1. Pod 상태 상세 조회
-$ kubectl -n app-dev describe pod user-service
-Name:             user-service
-Namespace:        app-dev
-Service Account:  default
-Node:             minikube/<IP>
-Start Time:       <TIMESTAMP>
-Labels:           app.kubernetes.io/name=user-service
-                  app.kubernetes.io/part-of=demo
-                  environment=dev
-Status:           Running
-IP:               <IP>
-Containers:
-  app:
-    Image:          mogumogusityau/user-service:1.1.0
-    Image ID:       docker-pullable://mogumogusityau/user-service@sha256:<DIGEST>
-    Port:           3000/TCP
-    State:          Running
-    Ready:          True
-    Environment:
-      PORT:  <set to the key 'PORT' of config map 'user-service-config'>
-Events:
-  Normal  Scheduled  ...  default-scheduler  Successfully assigned app-dev/user-service to minikube
-  Normal  Pulled     ...
-  Normal  Created    ...
-  Normal  Started    ...
+# 1. 초기 상태 (v1 완전 배포)
+--- Pod Status ---
+user-service-7dbcddc6fc-5z5wp 1/1 Running
+user-service-7dbcddc6fc-fmwgq 1/1 Running  
+user-service-7dbcddc6fc-kbk57 1/1 Running
 
-# 2. 실시간 로그 확인 (startup message 체크)
-$ kubectl -n app-dev logs pod/user-service -f
-🚀 User service is running on http://0.0.0.0:3000
+--- Service Responses ---
+Request 1: user-service v1.0.0
+Request 2: user-service v1.0.0
+Request 3: user-service v1.0.0
 
-# 3. 내부 Service Discovery 테스트
-$ kubectl -n app-dev run alpine-test --rm -it --image=alpine:3.19 -- \
-  sh -c 'apk add --no-cache curl && curl -v http://user-service/'
+# 2. 롤링 업데이트 진행 중 (혼재 구간)
+--- Pod Status ---
+user-service-5ffc8dbcf6-7jtrm 1/1 Running      # 새 ReplicaSet (v2)
+user-service-5ffc8dbcf6-zd44d 1/1 Running      # 새 ReplicaSet (v2)
+user-service-7dbcddc6fc-5z5wp 1/1 Terminating  # 기존 ReplicaSet (v1)
+user-service-7dbcddc6fc-fmwgq 1/1 Running      # 기존 ReplicaSet (v1)
 
-{"ok":true}
+--- Service Responses ---
+Request 19: payment-service v1.0.0
+Request 20: Connection failed  # Pod 준비 중
+Request 21: Connection failed
+
+# 3. 롤링 업데이트 완료 (v2 완전 배포)
+--- Pod Status ---
+user-service-5ffc8dbcf6-7jtrm 1/1 Running
+user-service-5ffc8dbcf6-pl2vs 1/1 Running
+user-service-5ffc8dbcf6-zd44d 1/1 Running
+
+--- Service Responses ---
+Request 46: payment-service v1.0.0
+Request 47: payment-service v1.0.0
+Request 48: payment-service v1.0.0
 ```
 
-#### 4.4 외부 접근 테스트 (External Access)
+**최종 상태 확인**:
 
 ```bash
-# 로컬 테스트를 위한 포트 포워딩
-$ kubectl -n app-dev port-forward pod/user-service 8080:3000 &
-Forwarding from [::1]:8080 -> 3000
+$ kubectl -n app-dev get all
+NAME                                READY   STATUS    RESTARTS   AGE
+pod/user-service-5ffc8dbcf6-7jtrm   1/1     Running   0          47s
+pod/user-service-5ffc8dbcf6-pl2vs   1/1     Running   0          34s
+pod/user-service-5ffc8dbcf6-zd44d   1/1     Running   0          47s
 
-# 외부 연결성 테스트
-$ curl -v http://localhost:8080
-{"ok":true}
+NAME                           READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/user-service   3/3     3            3           61s
+
+NAME                                      DESIRED   CURRENT   READY   AGE
+replicaset.apps/user-service-5ffc8dbcf6   3         3         3       47s  # 활성
+replicaset.apps/user-service-7dbcddc6fc   0         0         0       61s  # 비활성
+```
+
+#### 4.4 수동 검증 방법
+
+```bash
+# ReplicaSet 변화 관찰
+$ kubectl -n app-dev get rs -w
+NAME                      DESIRED   CURRENT   READY   AGE
+user-service-7dbcddc6fc   3         3         3       2m
+user-service-5ffc8dbcf6   0         0         0       0s
+user-service-5ffc8dbcf6   0         0         0       0s
+user-service-5ffc8dbcf6   1         0         0       0s
+user-service-5ffc8dbcf6   1         0         0       0s
+user-service-5ffc8dbcf6   1         1         0       0s
+user-service-7dbcddc6fc   2         3         3       2m
+user-service-5ffc8dbcf6   1         1         1       12s
+user-service-5ffc8dbcf6   2         1         1       12s
+...
+
+# 롤아웃 히스토리 확인
+$ kubectl -n app-dev rollout history deployment/user-service
+deployment.apps/user-service 
+REVISION  CHANGE-CAUSE
+1         <none>
+2         <none>
+
+# 특정 Pod 로그 실시간 확인
+$ kubectl -n app-dev logs -f deployment/user-service
+🚀 Payment service is running on http://0.0.0.0:3000
 ```
 
 ### 5. 롤백/청소 (Rollback & Cleanup)
 
 ```bash
-# 완전한 정리 (권장)
+# 이전 버전으로 롤백 (필요시)
+$ kubectl -n app-dev rollout undo deployment/user-service
+deployment.apps/user-service rolled back
+
+# 롤백 진행상황 모니터링
+$ kubectl -n app-dev rollout status deployment/user-service --timeout=300s
+
+# 완전한 정리 (자동화 스크립트에 포함됨)
 $ kubectl delete namespace app-dev
 namespace "app-dev" deleted
 
 # 모든 리소스가 삭제되었는지 확인
 $ kubectl get all -n app-dev
 No resources found in app-dev namespace.
-
-# port-forward 프로세스 정리
-$ sudo lsof -i :8080
-COMMAND     PID     USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME
-kubectl 2779071 mogumogu    7u  IPv4 6153381      0t0  TCP localhost:http-alt (LISTEN)
-kubectl 2779071 mogumogu    8u  IPv6 6153383      0t0  TCP ip6-localhost:http-alt (LISTEN)
-
-# 남아있는 프로세스 종료
-$ kill -9 <PID>
 ```
 
 ### 6. 마무리 (Conclusion)
 
-이 가이드를 통해 **kubectl의 핵심 워크플로우**를 완전히 경험했습니다:
+이 가이드를 통해 **Kubernetes Deployment의 롤링 업데이트 전체 과정**을 완전히 경험했습니다:
 
-* **배포**: `kubectl apply -k`로 Kustomize 기반 리소스 관리
-* **검증**: `describe`, `logs`, `exec`로 다각도 상태 점검  
-* **테스트**: Service Discovery와 port-forward를 통한 연결성 확인
-* **정리**: namespace 삭제로 깔끔한 환경 복원
+* **무중단 배포**: 서비스 중단 없이 v1 → v2로 점진적 업데이트
+* **트래픽 분배**: 업데이트 중 구버전과 신버전이 동시에 요청을 처리하는 구간 관찰
+* **자동화**: 전체 과정을 스크립트로 자동화하여 재현 가능한 테스트 환경 구축
+* **실시간 모니터링**: Pod 상태 변화와 ReplicaSet 전환 과정을 실시간으로 추적
 
 **핵심 학습 포인트**:
-- ConfigMap을 통한 환경변수 주입 패턴
-- Pod ↔ Service ↔ 외부 접근의 네트워킹 흐름
-- 실제 운영 환경에서 자주 사용하는 kubectl 디버깅 명령어들
+- RollingUpdate 전략의 maxUnavailable/maxSurge 설정 효과
+- ReplicaSet을 통한 Pod 버전 관리 메커니즘  
+- NodePort를 통한 외부 트래픽 접근과 부하 분산
+- `--no-keepalive` 옵션을 통한 정확한 로드밸런싱 패턴 관찰
 
-해당 자료는 다음 [repository](https://github.com/mogumogu-lab/k8s-pod)에서 확인할 수 있습니다. 다음에는 더 좋은 글로 찾아뵐 수 있도록 하겠습니다.
+**실제 운영 환경 적용 시 고려사항**:
+- readinessProbe/livenessProbe 설정으로 무중단 배포 보장
+- 롤백 계획과 health check 기반 자동 롤백 설정
+- Blue-Green 배포나 Canary 배포와의 전략적 선택
+
+해당 자료는 실제 프로덕션 환경에서의 무중단 배포 전략 수립에 활용할 수 있습니다. 다음에는 더 고도화된 배포 전략들을 다룰 예정입니다.

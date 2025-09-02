@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: mogumogusityau/user-service:2.0.0
+          image: mogumogusityau/payment-service:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
@@ -36,7 +36,7 @@ spec:
             - name: VERSION
               value: "2.0.0"
             - name: MESSAGE
-              value: "Hello from Version 2.0!"
+              value: "Hello from Payment Service!"
           readinessProbe:
             httpGet:
               path: /

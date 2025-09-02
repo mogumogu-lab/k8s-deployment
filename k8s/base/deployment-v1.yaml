@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: mogumogusityau/user-service:1.1.0
+          image: mogumogusityau/user-service:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
