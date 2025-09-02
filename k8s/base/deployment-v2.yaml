@@ -4,7 +4,7 @@ metadata:
   name: user-service
   labels:
     app.kubernetes.io/name: user-service
-    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/version: "2.0.0"
 spec:
   replicas: 3
   strategy:
@@ -19,11 +19,11 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: user-service
-        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/version: "2.0.0"
     spec:
       containers:
         - name: app
-          image: mogumogusityau/user-service:1.1.0
+          image: mogumogusityau/user-service:2.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
@@ -34,7 +34,9 @@ spec:
                   name: user-service-config
                   key: PORT
             - name: VERSION
-              value: "1.0.0"
+              value: "2.0.0"
+            - name: MESSAGE
+              value: "Hello from Version 2.0!"
           readinessProbe:
             httpGet:
               path: /
