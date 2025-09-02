@@ -1,0 +1,11 @@
+resources:
+  - ../../base
+  - namespace.yaml
+
+namespace: app-dev
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: user-service
+      app.kubernetes.io/part-of: demo
+      environment: dev
