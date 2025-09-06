@@ -20,19 +20,15 @@ date: 2025-09-02
 
 - **2분 만에 확인하기**:
 
+터미널 1에서 수동으로 명령어 실행, 터미널 2에서 모니터링 스크립트 실행:
+
 ```bash
+# 터미널 2 - 모니터링
 $ ./test-rolling-update.sh
-=== Rolling Update Test Script ===
+=== Rolling Update Monitor ===
 Minikube IP: 192.168.49.2
 Service URL: http://192.168.49.2:30000/
-
-🧹 Cleaning up existing resources...
-🚀 Deploying v1 (user-service)...
-✅ Deployment user-service is ready
-🧪 Testing v1 service (5 requests)...
-
-⚡ Starting Rolling Update to v2 (payment-service)...
-👀 Monitoring Rolling Update (will auto-stop when complete)...
+Press Ctrl+C to stop monitoring
 
 --- Pod Status (23:28:53) ---
 user-service-5ffc8dbcf6-7jtrm 1/1 Running
@@ -44,9 +40,7 @@ user-service-7dbcddc6fc-kbk57 1/1 Terminating
 Request 19: payment-service v1.0.0
 Request 22: payment-service v1.0.0
 Request 23: payment-service v1.0.0
-
-🎉 Rolling update completed! All pods are from the same replica set.
-✅ Rolling update test completed successfully!
+🔄 Traffic distribution: v1=1, v2=2 (Mixed!)
 ```
 
 ### 1. 우리가 만들 것 (What you'll build)
@@ -115,7 +109,7 @@ flowchart TB
   - 롤링 업데이트 중 Pod 상태가 Terminating/ContainerCreating/Running으로 변화
   - 업데이트 완료 후 모든 요청이 `payment-service v1.0.0`으로 응답
   - 단일 ReplicaSet만 활성화되어 롤링 업데이트 완료 확인
-  - 모든 리소스 자동 정리 완료
+  - 모든 리소스 정리
 
 ### 2. 준비물 (Prereqs)
 
@@ -274,25 +268,54 @@ spec:
     app.kubernetes.io/name: user-service
 ```
 
-#### 4.2 자동화 스크립트 실행
+#### 4.2 수동 실행 방법 (권장)
+
+**터미널 1: 배포 명령어 수동 실행**
 
 ```bash
-# 실행 권한 부여
+# 1. 네임스페이스 및 기본 리소스 생성
+$ kubectl create namespace app-dev --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. v1 배포 (user-service)
+$ kubectl -n app-dev apply -f k8s/base/deployment-v1.yaml
+$ kubectl -n app-dev apply -f k8s/base/service-nodeport.yaml
+
+# 3. 배포 완료 대기
+$ kubectl -n app-dev rollout status deployment/user-service --timeout=300s
+
+# 4. v1 상태 확인
+$ kubectl -n app-dev get pods
+$ curl --no-keepalive -s http://$(minikube ip):30000/ | jq
+
+# 5. 롤링 업데이트 시작 (payment-service로 변경)
+$ kubectl -n app-dev apply -f k8s/base/deployment-v2.yaml
+
+# 6. 롤아웃 진행 상황 모니터링
+$ kubectl -n app-dev rollout status deployment/user-service --timeout=300s
+
+# 7. 최종 확인
+$ kubectl -n app-dev get all
+$ curl --no-keepalive -s http://$(minikube ip):30000/ | jq
+
+# 8. 정리
+$ kubectl delete namespace app-dev
+```
+
+**터미널 2: 실시간 모니터링**
+
+```bash
+# 실행 권한 부여 (최초 1회)
 $ chmod +x test-rolling-update.sh
 
-# 전체 롤링 업데이트 과정 자동 실행
+# 롤링 업데이트 실시간 모니터링 (Ctrl+C로 종료)
 $ ./test-rolling-update.sh
 ```
 
-**스크립트 주요 기능**:
-1. **🧹 환경 초기화**: 기존 리소스 모두 삭제
-2. **🚀 v1 배포**: user-service:1.0.0 배포 및 준비 대기
-3. **🧪 v1 검증**: 5번 요청으로 정상 작동 확인
-4. **⚡ 롤링 업데이트 시작**: deployment-v2.yaml 적용
-5. **👀 실시간 모니터링**: Pod 상태와 트래픽 분배 관찰
-6. **🎉 완료 감지**: 모든 Pod가 동일 ReplicaSet이 되면 자동 종료
-7. **🔍 최종 검증**: v2 서비스 5번 테스트
-8. **🧹 자동 정리**: 모든 리소스 삭제
+**모니터링 스크립트 기능**:
+- Pod 상태 실시간 출력 (Running/Terminating/ContainerCreating)
+- 서비스 응답 테스트 (v1/v2 트래픽 분배 확인)
+- 혼재 구간에서 트래픽 분포 표시
+- Ctrl+C로 언제든 중단 가능
 
 #### 4.3 상세 검증 (Verification)
 
