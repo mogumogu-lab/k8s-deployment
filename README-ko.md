@@ -6,9 +6,7 @@ date: 2025-09-02
 
 # Kubernetes Deployment
 
-## Contents 
-
-### 요약 (TL;DR)
+## 요약 (TL;DR)
 
 이 가이드는 **Kubernetes 롤링 업데이트**를 실제로 체험해보는 실습서입니다!
 
@@ -18,32 +16,9 @@ date: 2025-09-02
 
 > 💡 **이런 분들께 추천**: Pod는 써봤는데 Deployment 롤링 업데이트가 궁금한 분, 트래픽 분배 과정을 실제로 보고 싶은 분
 
-- **2분 만에 확인하기**:
+- **핵심 특징**: 수동 명령어로 각 단계를 직접 실행하면서, 별도 터미널에서 실시간 모니터링
 
-터미널 1에서 수동으로 명령어 실행, 터미널 2에서 모니터링 스크립트 실행:
-
-```bash
-# 터미널 2 - 모니터링
-$ ./test-rolling-update.sh
-=== Rolling Update Monitor ===
-Minikube IP: 192.168.49.2
-Service URL: http://192.168.49.2:30000/
-Press Ctrl+C to stop monitoring
-
---- Pod Status (23:28:53) ---
-user-service-5ffc8dbcf6-7jtrm 1/1 Running
-user-service-5ffc8dbcf6-zd44d 1/1 Running
-user-service-7dbcddc6fc-fmwgq 1/1 Terminating
-user-service-7dbcddc6fc-kbk57 1/1 Terminating
-
---- Service Responses ---
-Request 19: payment-service v1.0.0
-Request 22: payment-service v1.0.0
-Request 23: payment-service v1.0.0
-🔄 Traffic distribution: v1=1, v2=2 (Mixed!)
-```
-
-### 1. 우리가 만들 것 (What you'll build)
+## 1. 우리가 만들 것 (What you'll build)
 
 - **목표 아키텍처**:
 
@@ -111,7 +86,7 @@ flowchart TB
   - 단일 ReplicaSet만 활성화되어 롤링 업데이트 완료 확인
   - 모든 리소스 정리
 
-### 2. 준비물 (Prereqs)
+## 2. 준비물 (Prereqs)
 
 - OS: Linux / macOS / Windows 11 + WSL2(Ubuntu 22.04+)
 - kubectl: v1.27+ (Deployment 및 rollout 지원)
@@ -126,21 +101,100 @@ flowchart TB
 - 검증 도구: curl (응답 확인용), jq (JSON 파싱용)
 
 ```bash
-# 클러스터 연결 확인
-$ kubectl cluster-info
-Kubernetes control plane is running at https://192.168.49.2:8443
-CoreDNS is running at https://192.168.49.2:8443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
-
-$ kubectl get nodes
-NAME       STATUS   ROLES           AGE   VERSION
-minikube   Ready    control-plane   19h   v1.33.1
-
 # 필요한 이미지가 pull 가능한지 확인
 $ docker pull mogumogusityau/user-service:1.0.0
 $ docker pull mogumogusityau/payment-service:1.0.0
 ```
 
-### 3. 핵심 개념 요약 (Concepts)
+### Minikube 클러스터 설정
+
+```bash
+# 클러스터 시작 (노드 3개, CPU 2개, 메모리 8GB, Cilium CNI)
+$ minikube start --driver=docker --nodes=3 --cpus=2 --memory=8g --cni=cilium
+😄  minikube v1.36.0 on Ubuntu 24.04
+✨  Using the docker driver based on user configuration
+📌  Using Docker driver with root privileges
+👍  Starting "minikube" primary control-plane node in "minikube" cluster
+🚜  Pulling base image v0.0.47 ...
+🔥  Creating docker container (CPUs=2, Memory=8192MB) ...
+🐳  Preparing Kubernetes v1.33.1 on Docker 28.1.1 ...
+    ▪ Generating certificates and keys ...
+    ▪ Booting up control plane ...
+    ▪ Configuring RBAC rules ...
+🔗  Configuring Cilium (Container Networking Interface) ...
+🔎  Verifying Kubernetes components...
+    ▪ Using image gcr.io/k8s-minikube/storage-provisioner:v5
+🌟  Enabled addons: default-storageclass, storage-provisioner
+🏄  Done! kubectl is now configured to use "minikube" cluster and "default" namespace by default
+
+# 노드 상태 확인
+$ kubectl get nodes -o wide
+NAME           STATUS   ROLES           AGE   VERSION   INTERNAL-IP    EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION     CONTAINER-RUNTIME
+minikube       Ready    control-plane   68s   v1.33.1   192.168.49.2   <none>        Ubuntu 22.04.5 LTS   6.8.0-79-generic   docker://28.1.1
+minikube-m02   Ready    <none>          52s   v1.33.1   192.168.49.3   <none>        Ubuntu 22.04.5 LTS   6.8.0-79-generic   docker://28.1.1
+minikube-m03   Ready    <none>          40s   v1.33.1   192.168.49.4   <none>        Ubuntu 22.04.5 LTS   6.8.0-79-generic   docker://28.1.1
+```
+
+## 3. 실행 방법
+
+- **터미널 1: 실시간 모니터링**
+
+```bash
+# 실행 권한 부여 (최초 1회)
+$ chmod +x test-rolling-update.sh
+
+# 롤링 업데이트 실시간 모니터링 (Ctrl+C로 종료)
+$ ./test-rolling-update.sh
+```
+
+- **터미널 2: 배포 명령어 수동 실행**
+
+```bash
+# 1. 네임스페이스 생성
+$ kubectl create namespace app-dev
+namespace/app-dev created
+
+# 2. v1 배포 (user-service)
+$ kubectl -n app-dev apply -f k8s/base/configmap.yaml
+configmap/user-service-config created
+
+$ kubectl -n app-dev apply -f k8s/base/deployment-v1.yaml
+deployment.apps/user-service created
+
+$ kubectl -n app-dev apply -f k8s/base/service-nodeport.yaml
+service/user-service created
+
+# 3. 배포 완료 대기 (Ready 상태 확인)
+$ kubectl -n app-dev get pods
+NAME                            READY   STATUS    RESTARTS   AGE
+user-service-7dbcddc6fc-29vqp   1/1     Running   0          7m37s
+user-service-7dbcddc6fc-g6ndf   1/1     Running   0          7m37s
+user-service-7dbcddc6fc-jzx49   1/1     Running   0          7m37s
+
+# 4. v1 서비스 테스트
+$ curl --no-keepalive -s http://$(minikube ip):30000/ | jq
+
+# 5. 롤링 업데이트 시작! (여기서 터미널2 모니터링 시작)
+$ kubectl -n app-dev apply -f k8s/base/deployment-v2.yaml
+deployment.apps/user-service configured
+
+# 6. 롤아웃 상태 확인
+$ kubectl -n app-dev rollout status deployment/user-service
+Waiting for deployment "user-service" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "user-service" rollout to finish: 1 old replicas are pending termination...
+deployment "user-service" successfully rolled out
+
+# 7. 정리
+$ kubectl delete namespace app-dev
+```
+
+- **모니터링 스크립트 기능**:
+  - Pod 상태 실시간 출력 (Running/Terminating/ContainerCreating)
+  - 서비스 응답 테스트 (v1/v2 트래픽 분배 확인)
+  - 혼재 구간에서 트래픽 분포 표시
+  - Ctrl+C로 언제든 중단 가능
+
+## 4. 핵심 개념 요약 (Concepts)
 
 - **꼭 알아야 할 포인트**:
   - **Rolling Update**: 기존 Pod를 점진적으로 새 버전으로 교체하는 무중단 배포 방식
@@ -156,9 +210,9 @@ $ docker pull mogumogusityau/payment-service:1.0.0
 | `kubectl rollout undo` | 이전 버전으로 롤백 | --to-revision으로 특정 버전 지정 가능 |
 | `--no-keepalive` | HTTP 연결을 매번 새로 생성 | 로드밸런싱 분배 패턴을 정확히 관찰 가능 |
 
-### 4. 구현 (Step-by-step)
+## 5. 매니페스트 구조
 
-#### 4.1 매니페스트 구조 확인
+### 5.1 Deployment 파일
 
 ```yaml
 # k8s/base/deployment-v1.yaml
@@ -268,58 +322,9 @@ spec:
     app.kubernetes.io/name: user-service
 ```
 
-#### 4.2 수동 실행 방법 (권장)
+### 5.2 상세 검증 (Verification)
 
-**터미널 1: 배포 명령어 수동 실행**
-
-```bash
-# 1. 네임스페이스 및 기본 리소스 생성
-$ kubectl create namespace app-dev --dry-run=client -o yaml | kubectl apply -f -
-
-# 2. v1 배포 (user-service)
-$ kubectl -n app-dev apply -f k8s/base/deployment-v1.yaml
-$ kubectl -n app-dev apply -f k8s/base/service-nodeport.yaml
-
-# 3. 배포 완료 대기
-$ kubectl -n app-dev rollout status deployment/user-service --timeout=300s
-
-# 4. v1 상태 확인
-$ kubectl -n app-dev get pods
-$ curl --no-keepalive -s http://$(minikube ip):30000/ | jq
-
-# 5. 롤링 업데이트 시작 (payment-service로 변경)
-$ kubectl -n app-dev apply -f k8s/base/deployment-v2.yaml
-
-# 6. 롤아웃 진행 상황 모니터링
-$ kubectl -n app-dev rollout status deployment/user-service --timeout=300s
-
-# 7. 최종 확인
-$ kubectl -n app-dev get all
-$ curl --no-keepalive -s http://$(minikube ip):30000/ | jq
-
-# 8. 정리
-$ kubectl delete namespace app-dev
-```
-
-**터미널 2: 실시간 모니터링**
-
-```bash
-# 실행 권한 부여 (최초 1회)
-$ chmod +x test-rolling-update.sh
-
-# 롤링 업데이트 실시간 모니터링 (Ctrl+C로 종료)
-$ ./test-rolling-update.sh
-```
-
-**모니터링 스크립트 기능**:
-- Pod 상태 실시간 출력 (Running/Terminating/ContainerCreating)
-- 서비스 응답 테스트 (v1/v2 트래픽 분배 확인)
-- 혼재 구간에서 트래픽 분포 표시
-- Ctrl+C로 언제든 중단 가능
-
-#### 4.3 상세 검증 (Verification)
-
-**롤링 업데이트 과정 관찰**:
+- **롤링 업데이트 과정 관찰**:
 
 ```bash
 # 1. 초기 상태 (v1 완전 배포)
@@ -374,7 +379,7 @@ replicaset.apps/user-service-5ffc8dbcf6   3         3         3       47s  # 활
 replicaset.apps/user-service-7dbcddc6fc   0         0         0       61s  # 비활성
 ```
 
-#### 4.4 수동 검증 방법
+### 5.3 수동 검증 방법
 
 ```bash
 # ReplicaSet 변화 관찰
@@ -403,7 +408,7 @@ $ kubectl -n app-dev logs -f deployment/user-service
 🚀 Payment service is running on http://0.0.0.0:3000
 ```
 
-### 5. 롤백/청소 (Rollback & Cleanup)
+## 6. 롤백/청소 (Rollback & Cleanup)
 
 ```bash
 # 이전 버전으로 롤백 (필요시)
@@ -422,7 +427,7 @@ $ kubectl get all -n app-dev
 No resources found in app-dev namespace.
 ```
 
-### 6. 마무리 (Conclusion)
+## 7. 마무리 (Conclusion)
 
 이 가이드를 통해 **Kubernetes Deployment의 롤링 업데이트 전체 과정**을 완전히 경험했습니다:
 
@@ -436,10 +441,5 @@ No resources found in app-dev namespace.
 - ReplicaSet을 통한 Pod 버전 관리 메커니즘  
 - NodePort를 통한 외부 트래픽 접근과 부하 분산
 - `--no-keepalive` 옵션을 통한 정확한 로드밸런싱 패턴 관찰
-
-**실제 운영 환경 적용 시 고려사항**:
-- readinessProbe/livenessProbe 설정으로 무중단 배포 보장
-- 롤백 계획과 health check 기반 자동 롤백 설정
-- Blue-Green 배포나 Canary 배포와의 전략적 선택
 
 해당 자료는 실제 프로덕션 환경에서의 무중단 배포 전략 수립에 활용할 수 있습니다. 다음에는 더 고도화된 배포 전략들을 다룰 예정입니다.
